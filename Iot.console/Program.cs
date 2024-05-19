@@ -15,16 +15,27 @@ namespace ProductionMonitoringAgent
         private static List<string> deviceNames = new List<string>();
         private static DeviceClient deviceClient;
         private static OpcClient opcClient;
-        
-       
+        private static string iotHubConnectionString;
+
         static async Task Main(string[] args)
         {
+            try
+            {
+                using StreamReader reader = new("connection.txt");
+                string text = reader.ReadToEnd();
+            iotHubConnectionString = text; 
+            }
+            catch (IOException e)
+            {
+                Console.WriteLine("The file could not be read:");
+                Console.WriteLine(e.Message);
+            }
+
             // OPC UA server configuration
             var opcServerUrl = "opc.tcp://localhost:4840"; // Replace with actual OPC server URL
             opcClient = new OpcClient(opcServerUrl);
 
             // Azure IoT Hub configuration
-            var iotHubConnectionString = "HostName=Zajecia-wmii.azure-devices.net;DeviceId=Device1;SharedAccessKey=BsFRd2Vy4SWlmqLLkpX8fqf54rD+xiUrNAIoTA2IEJc="; 
             deviceClient = DeviceClient.CreateFromConnectionString(iotHubConnectionString, TransportType.Mqtt);
 
             try
@@ -97,7 +108,7 @@ namespace ProductionMonitoringAgent
                                 var messageString = JsonConvert.SerializeObject(ErrorTelemetry);
                                 var message = new Message(System.Text.Encoding.UTF8.GetBytes(messageString));
 
-                                // Send telemetry message to IoT Hub
+                                
                                 await deviceClient.SendEventAsync(message);
 
                                 Console.WriteLine($"Sent telemetry data for device errors changes in {deviceName} to IoT Hub");
@@ -112,7 +123,7 @@ namespace ProductionMonitoringAgent
                             }
                         }
 
-                        // Read OPC data
+                        // Read 
                         var productionStatus = opcClient.ReadNode($"ns=2;s={deviceName}/ProductionStatus").Value;
                         var workorderId = opcClient.ReadNode($"ns=2;s={deviceName}/WorkorderId").Value;
                         var productionRate = Convert.ToInt32(opcClient.ReadNode($"ns=2;s={deviceName}/ProductionRate").Value);
@@ -168,9 +179,8 @@ namespace ProductionMonitoringAgent
 
                     try
                     {
-                        // Debug output of the twinUpdate JSON
+                        
                         string twinUpdateJson = twinUpdate.ToJson();
-                        //Console.WriteLine("Twin Update JSON: " + twinUpdateJson);
 
                         // Update reported properties
                         await deviceClient.UpdateReportedPropertiesAsync(twinUpdate);
@@ -178,7 +188,6 @@ namespace ProductionMonitoringAgent
                         var messageString = JsonConvert.SerializeObject(allTelemetryData);
                         var message = new Message(System.Text.Encoding.UTF8.GetBytes(messageString));
 
-                        // Send telemetry message to IoT Hub
                         await deviceClient.SendEventAsync(message);
 
                         Console.WriteLine("Updated reported properties for all devices");
@@ -237,9 +246,7 @@ namespace ProductionMonitoringAgent
                 Console.WriteLine($"{deviceid}");
                 if (methodRequest.DataAsJson != null)
                 {
-                    // Pobierz nazwę urządzenia z przekazanego payloadu
 
-                    // Sprawdź, czy istnieje nazwa urządzenia
                     if (!string.IsNullOrEmpty(deviceid))
                     {
                         Console.WriteLine($"EmergencyStop method invoked for device: {deviceid}");
