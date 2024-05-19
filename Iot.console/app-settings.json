@@ -1,5 +1,0 @@
-{
-  "AzureIoTHub": {
-    "ConnectionString": "HostName=Zajecia-wmii.azure-devices.net;DeviceId=Device1;SharedAccessKey=BsFRd2Vy4SWlmqLLkpX8fqf54rD+xiUrNAIoTA2IEJc="
-  },
-}
