@@ -15,7 +15,8 @@ namespace ProductionMonitoringAgent
         private static List<string> deviceNames = new List<string>();
         private static DeviceClient deviceClient;
         private static OpcClient opcClient;
-
+       
+        
         static async Task Main(string[] args)
         {
             // OPC UA server configuration
@@ -30,7 +31,6 @@ namespace ProductionMonitoringAgent
             {
                 // Connect to OPC UA server
                 opcClient.Connect();
-
                 // Browse nodes to get device names
                 var nodes = opcClient.BrowseNode(OpcObjectTypes.ObjectsFolder);
                 Browse(nodes);
@@ -51,7 +51,7 @@ namespace ProductionMonitoringAgent
 
                 await SetupDirectMethodHandlers();
 
-                
+
 
                 // Main loop for reading OPC data and sending to IoT Hub
                 while (true)
@@ -61,13 +61,50 @@ namespace ProductionMonitoringAgent
                     var allTelemetryData = new List<object>();
                     var twinUpdate = new TwinCollection();
 
+
                     foreach (var deviceName in deviceNames)
                     {
                         var sanitizedDeviceName = deviceName.Replace(" ", "");
                         var desiredProperties = await deviceClient.GetTwinAsync();
                         var desiredProductionRate = Convert.ToInt32(twin.Properties.Desired[sanitizedDeviceName]?.ProductionRate ?? 0);
-                        var nodeId =($"ns=2;s={deviceName}/ProductionRate");
                         var currentProductionRate = Convert.ToInt32(opcClient.ReadNode($"ns=2;s={deviceName}/ProductionRate").Value);
+                        var nodeId =($"ns=2;s={deviceName}/ProductionRate");
+
+                        var deviceTwin = await deviceClient.GetTwinAsync();
+                        
+                        var previousDeviceErrors = Convert.ToInt32(opcClient.ReadNode($"ns=2;s={deviceName}/DeviceErrors").Value);
+                        var currentDeviceErrors = Convert.ToInt32(deviceTwin.Properties.Reported[sanitizedDeviceName]?.DeviceErrors ?? 0);
+
+                        if (currentDeviceErrors != previousDeviceErrors)
+                        {
+                            // Create telemetry data for device errors change
+                            var ErrorTelemetry = new
+                            {
+                                deviceName,
+                                deviceErrorsChanged = true,
+                                previousDeviceErrors,
+                                currentDeviceErrors
+                            };
+
+                            try
+                            {
+                                var messageString = JsonConvert.SerializeObject(ErrorTelemetry);
+                                var message = new Message(System.Text.Encoding.UTF8.GetBytes(messageString));
+
+                                // Send telemetry message to IoT Hub
+                                await deviceClient.SendEventAsync(message);
+
+                                Console.WriteLine($"Sent telemetry data for device errors changes in {deviceName} to IoT Hub");
+                            }
+                            catch (Exception ex)
+                            {
+                                Console.WriteLine($"An error occurred while sending telemetry data: {ex.Message}");
+                                if (ex.InnerException != null)
+                                {
+                                    Console.WriteLine($"Inner exception: {ex.InnerException.Message}");
+                                }
+                            }
+                        }
 
                         // Read OPC data
                         var productionStatus = opcClient.ReadNode($"ns=2;s={deviceName}/ProductionStatus").Value;
@@ -76,26 +113,22 @@ namespace ProductionMonitoringAgent
                         var goodCount = Convert.ToInt64(opcClient.ReadNode($"ns=2;s={deviceName}/GoodCount").Value);
                         var badCount = Convert.ToInt64(opcClient.ReadNode($"ns=2;s={deviceName}/BadCount").Value);
                         var temperature = Convert.ToDouble(opcClient.ReadNode($"ns=2;s={deviceName}/Temperature").Value);
-                        var deviceErrors = Convert.ToInt32(opcClient.ReadNode($"ns=2;s={deviceName}/DeviceErrors").Value);
+                        var deviceErrors = Convert.ToInt32(opcClient.ReadNode($"ns=2;s={deviceName}/DeviceError").Value);
 
                         var totalProduction = goodCount + badCount;
                         var goodProductionRate = totalProduction > 0 ? (double)goodCount / totalProduction * 100 : 100;
 
 
-                        if (desiredProductionRate != currentProductionRate)
-                        {
-                            // Update production rate only if desired production rate has changed
-                            Console.WriteLine($"Updating ProductionRate for {deviceName} to {desiredProductionRate}");
-                            opcClient.WriteNode($"ns=2;s={deviceName}/ProductionRate", desiredProductionRate);
-                            currentProductionRate = desiredProductionRate;
-                        }
+                        await deviceClient.SetDesiredPropertyUpdateCallbackAsync(DesiredPropertyUpdateCallback, null);
 
-                        if (goodProductionRate < 90)
+
+                        if (goodProductionRate < 90 && productionRate>0)
                         {
-                            // Decrease desired production rate by 10 points
-                            var newDesiredProductionRate = desiredProductionRate - 10;
+                            //Decrease desired production rate by 10 points
+                            var newDesiredProductionRate = productionRate - 10;
                             opcClient.WriteNode($"ns=2;s={deviceName}/ProductionRate", newDesiredProductionRate);
                             Console.WriteLine($"Decreased desired ProductionRate for {deviceName} by 10 points, new value = {newDesiredProductionRate}");
+
                         }
 
                         var telemetryData = new
@@ -131,7 +164,7 @@ namespace ProductionMonitoringAgent
                     {
                         // Debug output of the twinUpdate JSON
                         string twinUpdateJson = twinUpdate.ToJson();
-                        Console.WriteLine("Twin Update JSON: " + twinUpdateJson);
+                        //Console.WriteLine("Twin Update JSON: " + twinUpdateJson);
 
                         // Update reported properties
                         await deviceClient.UpdateReportedPropertiesAsync(twinUpdate);
@@ -173,7 +206,23 @@ namespace ProductionMonitoringAgent
             await deviceClient.SetMethodHandlerAsync("EmergencyStop", EmergencyStopHandler, null);
             await deviceClient.SetMethodHandlerAsync("ResetErrorStatus", ResetErrorStatusHandler, null);
         }
+        static async Task DesiredPropertyUpdateCallback(TwinCollection desiredProperties, object userContext)
+        {
+            foreach (var deviceName in deviceNames)
+            {
+                var sanitizedDeviceName = deviceName.Replace(" ", "");
+                var desiredProductionRate = Convert.ToInt32(desiredProperties[sanitizedDeviceName]?.ProductionRate ?? 0);
+                var currentProductionRate = Convert.ToInt32(opcClient.ReadNode($"ns=2;s={deviceName}/ProductionRate").Value);
 
+                if (desiredProductionRate != currentProductionRate)
+                {
+                    // Update production rate only if desired production rate has changed
+                    Console.WriteLine($"Updating ProductionRate for {deviceName} to {desiredProductionRate}");
+                    opcClient.WriteNode($"ns=2;s={deviceName}/ProductionRate", desiredProductionRate);
+                    currentProductionRate = desiredProductionRate;
+                }
+            }
+        }
         static async Task<MethodResponse> EmergencyStopHandler(MethodRequest methodRequest, object userContext)
         {
             try
