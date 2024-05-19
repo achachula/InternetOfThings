@@ -5,7 +5,7 @@ Visual Studio
 Konto Azure z dostępem do IoT Hub i Azure Communication Services
 
 Konfiguracja:
-Po pobraniu należy do pliku connection.txt wkleić connectionstring z IoT Huba, a następnie uruchomić program 
+Po pobraniu należy do pliku connection.txt w folderze iot.console wkleić connectionstring z IoT Huba, a następnie uruchomić program 
 
 1. Opis funkcjonalności:
 
