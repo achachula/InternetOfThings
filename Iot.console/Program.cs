@@ -15,8 +15,8 @@ namespace ProductionMonitoringAgent
         private static List<string> deviceNames = new List<string>();
         private static DeviceClient deviceClient;
         private static OpcClient opcClient;
-       
         
+       
         static async Task Main(string[] args)
         {
             // OPC UA server configuration
@@ -24,13 +24,15 @@ namespace ProductionMonitoringAgent
             opcClient = new OpcClient(opcServerUrl);
 
             // Azure IoT Hub configuration
-            var iotHubConnectionString = "HostName=Zajecia-wmii.azure-devices.net;DeviceId=Device1;SharedAccessKey=BsFRd2Vy4SWlmqLLkpX8fqf54rD+xiUrNAIoTA2IEJc="; // Replace with actual IoT Hub connection string
+            var iotHubConnectionString = "HostName=Zajecia-wmii.azure-devices.net;DeviceId=Device1;SharedAccessKey=BsFRd2Vy4SWlmqLLkpX8fqf54rD+xiUrNAIoTA2IEJc="; 
             deviceClient = DeviceClient.CreateFromConnectionString(iotHubConnectionString, TransportType.Mqtt);
 
             try
             {
                 // Connect to OPC UA server
                 opcClient.Connect();
+                MethodRequest met = new MethodRequest("EmergencyStop");
+                Console.WriteLine(met);
                 // Browse nodes to get device names
                 var nodes = opcClient.BrowseNode(OpcObjectTypes.ObjectsFolder);
                 Browse(nodes);
@@ -77,6 +79,10 @@ namespace ProductionMonitoringAgent
 
                         if (currentDeviceErrors != previousDeviceErrors)
                         {
+                            if (currentDeviceErrors == 14)
+                            {
+                                opcClient.CallMethod($"ns=2;s={deviceName}", $"ns=2;s={deviceName}/EmergencyStop");
+                            }
                             // Create telemetry data for device errors change
                             var ErrorTelemetry = new
                             {
