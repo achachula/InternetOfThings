@@ -1,3 +1,12 @@
+0.Instrukcja uruchomienia
+
+Wymagania:
+Visual Studio
+Konto Azure z dostępem do IoT Hub i Azure Communication Services
+
+Konfiguracja:
+Po pobraniu należy do pliku connection.txt wkleić connectionstring z IoT Huba, a następnie uruchomić program 
+
 1. Opis funkcjonalności:
 
 Projekt obejmuje rozwinięty system monitorowania produkcji, który umożliwia zbieranie danych z różnych maszyn poprzez połączenie z serwerem OPC UA. Dane te są następnie przesyłane do platformy Azure IoT Hub, gdzie są przetwarzane, analizowane i wykorzystywane do monitorowania wydajności produkcji oraz wykrywania awarii.
