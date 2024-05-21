@@ -14,6 +14,9 @@ namespace ProductionMonitoringAgent
     {
         private static List<string> deviceNames = new List<string>();
         private static DeviceClient deviceClient;
+        private static DeviceClient deviceClient2;
+        private static DeviceClient deviceClient3;
+        private static DeviceClient currentdevice;
         private static OpcClient opcClient;
         private static string iotHubConnectionString;
 
@@ -23,7 +26,7 @@ namespace ProductionMonitoringAgent
             {
                 using StreamReader reader = new("connection.txt");
                 string text = reader.ReadToEnd();
-            iotHubConnectionString = text; 
+                iotHubConnectionString = text;
             }
             catch (IOException e)
             {
@@ -36,14 +39,14 @@ namespace ProductionMonitoringAgent
             opcClient = new OpcClient(opcServerUrl);
 
             // Azure IoT Hub configuration
-            deviceClient = DeviceClient.CreateFromConnectionString(iotHubConnectionString, TransportType.Mqtt);
-
+            deviceClient = DeviceClient.CreateFromConnectionString("HostName=Zajecia-wmii.azure-devices.net;DeviceId=Device1;SharedAccessKey=sYVN0SZvg2nFo4QAsyg2SbtlQv36CgIO6AIoTHCrIcM=", TransportType.Mqtt);
+            deviceClient2 = DeviceClient.CreateFromConnectionString("HostName=Zajecia-wmii.azure-devices.net;DeviceId=Device2;SharedAccessKey=6LLcDkMgbXHETR70MSLaZq5yOwaKgtTPfAIoTNE8Pdo=", TransportType.Mqtt);
+            deviceClient3 = DeviceClient.CreateFromConnectionString("HostName=Zajecia-wmii.azure-devices.net;DeviceId=Device3;SharedAccessKey=SkDKYZDKn3iejJgnTLcUqwRP8mx5qm4KLAIoTOCv7v0=", TransportType.Mqtt);
             try
             {
                 // Connect to OPC UA server
                 opcClient.Connect();
                 MethodRequest met = new MethodRequest("EmergencyStop");
-                Console.WriteLine(met);
                 // Browse nodes to get device names
                 var nodes = opcClient.BrowseNode(OpcObjectTypes.ObjectsFolder);
                 Browse(nodes);
@@ -62,34 +65,47 @@ namespace ProductionMonitoringAgent
                     }
                 }
 
-                await SetupDirectMethodHandlers();
 
+                await SetupDirectMethodHandlers(deviceClient);
+                await SetupDirectMethodHandlers(deviceClient2);
+                await SetupDirectMethodHandlers(deviceClient3);
 
 
                 // Main loop for reading OPC data and sending to IoT Hub
                 while (true)
                 {
-                    var twin = await deviceClient.GetTwinAsync();
-
-                    var allTelemetryData = new List<object>();
-                    var twinUpdate = new TwinCollection();
-
-
                     foreach (var deviceName in deviceNames)
                     {
+                        if (deviceName == "Device 1")
+                        {
+                            currentdevice = deviceClient;
+                        }
+                        else if (deviceName == "Device 2")
+                        {
+                            currentdevice = deviceClient2;
+                        }
+                        else if (deviceName == "Device 3")
+                            currentdevice = deviceClient3;
+
+                        var twin = await currentdevice.GetTwinAsync();
+
+                        var allTelemetryData = new List<object>();
+                        var twinUpdate = new TwinCollection();
+
                         var sanitizedDeviceName = deviceName.Replace(" ", "");
-                        var desiredProperties = await deviceClient.GetTwinAsync();
+                        var desiredProperties = await currentdevice.GetTwinAsync();
                         var desiredProductionRate = Convert.ToInt32(twin.Properties.Desired[sanitizedDeviceName]?.ProductionRate ?? 0);
                         var currentProductionRate = Convert.ToInt32(opcClient.ReadNode($"ns=2;s={deviceName}/ProductionRate").Value);
-                        var nodeId =($"ns=2;s={deviceName}/ProductionRate");
+                        var nodeId = ($"ns=2;s={deviceName}/ProductionRate");
 
-                        var deviceTwin = await deviceClient.GetTwinAsync();
-                        
+                        var deviceTwin = await currentdevice.GetTwinAsync();
+
                         var previousDeviceErrors = Convert.ToInt32(opcClient.ReadNode($"ns=2;s={deviceName}/DeviceErrors").Value);
                         var currentDeviceErrors = Convert.ToInt32(deviceTwin.Properties.Reported[sanitizedDeviceName]?.DeviceErrors ?? 0);
 
                         if (currentDeviceErrors != previousDeviceErrors)
                         {
+
                             if (currentDeviceErrors == 14)
                             {
                                 opcClient.CallMethod($"ns=2;s={deviceName}", $"ns=2;s={deviceName}/EmergencyStop");
@@ -108,8 +124,8 @@ namespace ProductionMonitoringAgent
                                 var messageString = JsonConvert.SerializeObject(ErrorTelemetry);
                                 var message = new Message(System.Text.Encoding.UTF8.GetBytes(messageString));
 
-                                
-                                await deviceClient.SendEventAsync(message);
+
+                                await currentdevice.SendEventAsync(message);
 
                                 Console.WriteLine($"Sent telemetry data for device errors changes in {deviceName} to IoT Hub");
                             }
@@ -135,11 +151,10 @@ namespace ProductionMonitoringAgent
                         var totalProduction = goodCount + badCount;
                         var goodProductionRate = totalProduction > 0 ? (double)goodCount / totalProduction * 100 : 100;
 
+                        await currentdevice.SetDesiredPropertyUpdateCallbackAsync(DesiredPropertyUpdateCallback, null);
 
-                        await deviceClient.SetDesiredPropertyUpdateCallbackAsync(DesiredPropertyUpdateCallback, null);
 
-
-                        if (goodProductionRate < 90 && productionRate>0)
+                        if (goodProductionRate < 90 && productionRate > 0)
                         {
                             //Decrease desired production rate by 10 points
                             var newDesiredProductionRate = productionRate - 10;
@@ -159,46 +174,71 @@ namespace ProductionMonitoringAgent
                             temperature,
                             deviceErrors
                         };
-
                         allTelemetryData.Add(telemetryData);
 
-                        // Update reported properties for this device
-                        var deviceTwinUpdate = new TwinCollection
+                        try
                         {
-                            ["ProductionRate"] = productionRate,
-                            ["GoodCount"] = goodCount,
-                            ["BadCount"] = badCount,
-                            ["Temperature"] = temperature,
-                            ["DeviceErrors"] = deviceErrors
-                        };
-
-                        twinUpdate[sanitizedDeviceName] = deviceTwinUpdate;
+                            var messageString = JsonConvert.SerializeObject(allTelemetryData);
+                            var message = new Message(System.Text.Encoding.UTF8.GetBytes(messageString));
 
 
-                    }
+                            await currentdevice.SendEventAsync(message);
 
-                    try
-                    {
-                        
-                        string twinUpdateJson = twinUpdate.ToJson();
-
-                        // Update reported properties
-                        await deviceClient.UpdateReportedPropertiesAsync(twinUpdate);
-
-                        var messageString = JsonConvert.SerializeObject(allTelemetryData);
-                        var message = new Message(System.Text.Encoding.UTF8.GetBytes(messageString));
-
-                        await deviceClient.SendEventAsync(message);
-
-                        Console.WriteLine("Updated reported properties for all devices");
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine($"An error occurred while updating reported properties: {ex.Message}");
-                        if (ex.InnerException != null)
-                        {
-                            Console.WriteLine($"Inner exception: {ex.InnerException.Message}");
+                            Console.WriteLine($"Sent telemetry data for {deviceName} to IoT Hub");
                         }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"An error occurred while sending telemetry data: {ex.Message}");
+                            if (ex.InnerException != null)
+                            {
+                                Console.WriteLine($"Inner exception: {ex.InnerException.Message}");
+                            }
+                        }
+                        // Check if values differ from reported properties
+                        var reportedProperties = deviceTwin.Properties.Reported[sanitizedDeviceName];
+
+                        bool updateProductionRate = !reportedProperties.ContainsKey("ProductionRate") || reportedProperties["ProductionRate"].ToObject<int>() != productionRate;
+                        bool updateDeviceErrors = !reportedProperties.ContainsKey("DeviceErrors") || reportedProperties["DeviceErrors"].ToObject<int>() != deviceErrors;
+
+                        if (updateProductionRate || updateDeviceErrors)
+                        {
+                            var deviceTwinUpdate = new TwinCollection();
+                            if (updateProductionRate)
+                            {
+                                deviceTwinUpdate["ProductionRate"] = productionRate;
+                            }
+                            if (updateDeviceErrors)
+                            {
+                                deviceTwinUpdate["DeviceErrors"] = deviceErrors;
+                            }
+                            twinUpdate[sanitizedDeviceName] = deviceTwinUpdate;
+
+                            try
+                            {
+
+                                string twinUpdateJson = twinUpdate.ToJson();
+
+                                // Update reported properties
+                                await currentdevice.UpdateReportedPropertiesAsync(twinUpdate);
+
+                                var messageString = JsonConvert.SerializeObject(allTelemetryData);
+                                var message = new Message(System.Text.Encoding.UTF8.GetBytes(messageString));
+
+                                await currentdevice.SendEventAsync(message);
+
+                                Console.WriteLine($"Updated reported properties for {deviceName}");
+                            }
+                            catch (Exception ex)
+                            {
+                                Console.WriteLine($"An error occurred while updating reported properties: {ex.Message}");
+                                if (ex.InnerException != null)
+                                {
+                                    Console.WriteLine($"Inner exception: {ex.InnerException.Message}");
+                                }
+                            }
+                        }
+
+
                     }
 
                     // Wait for next iteration
@@ -216,7 +256,7 @@ namespace ProductionMonitoringAgent
             }
         }
 
-        static async Task SetupDirectMethodHandlers()
+        static async Task SetupDirectMethodHandlers(DeviceClient deviceClient)
         {
             await deviceClient.SetMethodHandlerAsync("EmergencyStop", EmergencyStopHandler, null);
             await deviceClient.SetMethodHandlerAsync("ResetErrorStatus", ResetErrorStatusHandler, null);
@@ -246,31 +286,27 @@ namespace ProductionMonitoringAgent
                 Console.WriteLine($"{deviceid}");
                 if (methodRequest.DataAsJson != null)
                 {
-
                     if (!string.IsNullOrEmpty(deviceid))
                     {
                         Console.WriteLine($"EmergencyStop method invoked for device: {deviceid}");
 
-                        opcClient.CallMethod($"ns=2;s={deviceid}",$"ns=2;s={deviceid}/EmergencyStop");
+                        opcClient.CallMethod($"ns=2;s={deviceid}", $"ns=2;s={deviceid}/EmergencyStop");
                         return new MethodResponse(200);
                     }
                     else
                     {
-                        // Jeśli nie podano nazwy urządzenia w payloadzie, zwracamy błąd
                         Console.WriteLine("Error: Device name not provided in the payload.");
                         return new MethodResponse(400);
                     }
                 }
                 else
                 {
-                    // Jeśli payload jest pusty lub niepoprawny, zwracamy błąd
                     Console.WriteLine("Error: Empty or invalid payload.");
                     return new MethodResponse(400);
                 }
             }
             catch (Exception ex)
             {
-                // Jeśli wystąpił błąd podczas wywoływania operacji na urządzeniu, zwracamy kod błędu
                 Console.WriteLine($"An error occurred while executing EmergencyStop method: {ex.Message}");
                 return new MethodResponse(500);
             }
@@ -292,7 +328,7 @@ namespace ProductionMonitoringAgent
                     {
                         Console.WriteLine($"ResetErrorStatus method invoked for device: {deviceid}");
 
-                        opcClient.CallMethod($"ns=2;s={deviceid}",$"ns=2;s={deviceid}/ResetErrorStatus");
+                        opcClient.CallMethod($"ns=2;s={deviceid}", $"ns=2;s={deviceid}/ResetErrorStatus");
                         return new MethodResponse(200);
                     }
                     else
@@ -317,6 +353,6 @@ namespace ProductionMonitoringAgent
             }
         }
 
-     
+
     }
 }
