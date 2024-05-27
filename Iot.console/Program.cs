@@ -7,13 +7,15 @@ using Microsoft.Azure.Devices.Client;
 using Newtonsoft.Json;
 using Microsoft.Azure.Devices.Shared;
 using Opc.Ua;
-
+using System.Reflection;
+using System.Reflection;
 namespace ProductionMonitoringAgent
 {
     class Program
     {
         private static List<string> deviceNames = new List<string>();
-        private static DeviceClient deviceClient;
+        private static List<DeviceClient> deviceClients = new List<DeviceClient>();
+        //private static DeviceClient deviceClient;
         private static DeviceClient deviceClient2;
         private static DeviceClient deviceClient3;
         private static DeviceClient currentdevice;
@@ -22,26 +24,12 @@ namespace ProductionMonitoringAgent
 
         static async Task Main(string[] args)
         {
-            try
-            {
-                using StreamReader reader = new("connection.txt");
-                string text = reader.ReadToEnd();
-                iotHubConnectionString = text;
-            }
-            catch (IOException e)
-            {
-                Console.WriteLine("The file could not be read:");
-                Console.WriteLine(e.Message);
-            }
 
             // OPC UA server configuration
             var opcServerUrl = "opc.tcp://localhost:4840"; // Replace with actual OPC server URL
             opcClient = new OpcClient(opcServerUrl);
 
-            // Azure IoT Hub configuration
-            deviceClient = DeviceClient.CreateFromConnectionString("HostName=Zajecia-wmii.azure-devices.net;DeviceId=Device1;SharedAccessKey=sYVN0SZvg2nFo4QAsyg2SbtlQv36CgIO6AIoTHCrIcM=", TransportType.Mqtt);
-            deviceClient2 = DeviceClient.CreateFromConnectionString("HostName=Zajecia-wmii.azure-devices.net;DeviceId=Device2;SharedAccessKey=6LLcDkMgbXHETR70MSLaZq5yOwaKgtTPfAIoTNE8Pdo=", TransportType.Mqtt);
-            deviceClient3 = DeviceClient.CreateFromConnectionString("HostName=Zajecia-wmii.azure-devices.net;DeviceId=Device3;SharedAccessKey=SkDKYZDKn3iejJgnTLcUqwRP8mx5qm4KLAIoTOCv7v0=", TransportType.Mqtt);
+            // Azure IoT Hub configuration             
             try
             {
                 // Connect to OPC UA server
@@ -65,27 +53,43 @@ namespace ProductionMonitoringAgent
                     }
                 }
 
+                while (true)
+                {
+                    Console.WriteLine("Wprowadz connectionstring, lub wprowadz 0 w celu zakonczenia wprowadzania");
+                    string input = Console.ReadLine();
+                    if (input == "0")
+                    {
+                        Console.Clear();
+                        break; // Opuszczenie funkcji
+                    }
+                    else
+                    {
 
-                await SetupDirectMethodHandlers(deviceClient);
-                await SetupDirectMethodHandlers(deviceClient2);
-                await SetupDirectMethodHandlers(deviceClient3);
+                        deviceClients.Add(DeviceClient.CreateFromConnectionString(input, TransportType.Mqtt));
+                    }
 
+
+                }
+
+
+
+                foreach (DeviceClient deviceClient in deviceClients)
+                {
+                    await SetupDirectMethodHandlers(deviceClient);
+                }
+                int deviceindex;
 
                 // Main loop for reading OPC data and sending to IoT Hub
                 while (true)
                 {
                     foreach (var deviceName in deviceNames)
                     {
-                        if (deviceName == "Device 1")
-                        {
-                            currentdevice = deviceClient;
-                        }
-                        else if (deviceName == "Device 2")
-                        {
-                            currentdevice = deviceClient2;
-                        }
-                        else if (deviceName == "Device 3")
-                            currentdevice = deviceClient3;
+                        deviceindex = Convert.ToInt32(deviceName.Split(' ')[1]);
+                        currentdevice = deviceClients[deviceindex - 1];
+                      
+
+
+
 
                         var twin = await currentdevice.GetTwinAsync();
 
@@ -150,7 +154,6 @@ namespace ProductionMonitoringAgent
 
                         var totalProduction = goodCount + badCount;
                         var goodProductionRate = totalProduction > 0 ? (double)goodCount / totalProduction * 100 : 100;
-
                         await currentdevice.SetDesiredPropertyUpdateCallbackAsync(DesiredPropertyUpdateCallback, null);
 
 
@@ -184,7 +187,7 @@ namespace ProductionMonitoringAgent
 
                             await currentdevice.SendEventAsync(message);
 
-                            Console.WriteLine($"Sent telemetry data for {deviceName} to IoT Hub");
+                            //Console.WriteLine($"Sent telemetry data for {deviceName} to IoT Hub");
                         }
                         catch (Exception ex)
                         {
@@ -258,50 +261,46 @@ namespace ProductionMonitoringAgent
 
         static async Task SetupDirectMethodHandlers(DeviceClient deviceClient)
         {
-            await deviceClient.SetMethodHandlerAsync("EmergencyStop", EmergencyStopHandler, null);
-            await deviceClient.SetMethodHandlerAsync("ResetErrorStatus", ResetErrorStatusHandler, null);
+            await deviceClient.SetMethodHandlerAsync("EmergencyStop", EmergencyStopHandler, deviceClient);
+            await deviceClient.SetMethodHandlerAsync("ResetErrorStatus", ResetErrorStatusHandler, deviceClient);
         }
         static async Task DesiredPropertyUpdateCallback(TwinCollection desiredProperties, object userContext)
         {
             foreach (var deviceName in deviceNames)
             {
                 var sanitizedDeviceName = deviceName.Replace(" ", "");
-                var desiredProductionRate = Convert.ToInt32(desiredProperties[sanitizedDeviceName]?.ProductionRate ?? 0);
-                var currentProductionRate = Convert.ToInt32(opcClient.ReadNode($"ns=2;s={deviceName}/ProductionRate").Value);
-
-                if (desiredProductionRate != currentProductionRate)
+                if (desiredProperties.Contains(sanitizedDeviceName))
                 {
-                    // Update production rate only if desired production rate has changed
-                    Console.WriteLine($"Updating ProductionRate for {deviceName} to {desiredProductionRate}");
-                    opcClient.WriteNode($"ns=2;s={deviceName}/ProductionRate", desiredProductionRate);
-                    currentProductionRate = desiredProductionRate;
+                    var desiredProductionRate = Convert.ToInt32(desiredProperties[sanitizedDeviceName]["ProductionRate"] ?? 0);
+                    var currentProductionRate = Convert.ToInt32(opcClient.ReadNode($"ns=2;s={deviceName}/ProductionRate").Value);
+
+                    if (desiredProductionRate != currentProductionRate)
+                    {
+                        // Update production rate only if desired production rate has changed
+                        Console.WriteLine($"Updating ProductionRate for {deviceName} to {desiredProductionRate}");
+                        opcClient.WriteNode($"ns=2;s={deviceName}/ProductionRate", desiredProductionRate);
+                    }
                 }
             }
         }
         static async Task<MethodResponse> EmergencyStopHandler(MethodRequest methodRequest, object userContext)
         {
+            var deviceClient = (DeviceClient)userContext; // Retrieve the DeviceClient instance from user context
             try
             {
-                string deviceid = methodRequest.DataAsJson.Replace("\"", "");
-                Console.WriteLine($"{deviceid}");
-                if (methodRequest.DataAsJson != null)
+                string deviceId = methodRequest.DataAsJson.Replace("\"", "");
+                Console.WriteLine($"{deviceId}");
+                if (!string.IsNullOrEmpty(deviceId))
                 {
-                    if (!string.IsNullOrEmpty(deviceid))
-                    {
-                        Console.WriteLine($"EmergencyStop method invoked for device: {deviceid}");
+                    Console.WriteLine($"EmergencyStop method invoked for device: {deviceId}");
 
-                        opcClient.CallMethod($"ns=2;s={deviceid}", $"ns=2;s={deviceid}/EmergencyStop");
-                        return new MethodResponse(200);
-                    }
-                    else
-                    {
-                        Console.WriteLine("Error: Device name not provided in the payload.");
-                        return new MethodResponse(400);
-                    }
+                    // Call the OPC method on the device
+                    opcClient.CallMethod($"ns=2;s={deviceId}", $"ns=2;s={deviceId}/EmergencyStop");
+                    return new MethodResponse(200);
                 }
                 else
                 {
-                    Console.WriteLine("Error: Empty or invalid payload.");
+                    Console.WriteLine("Error: Device name not provided in the payload.");
                     return new MethodResponse(400);
                 }
             }
@@ -314,45 +313,31 @@ namespace ProductionMonitoringAgent
 
         static async Task<MethodResponse> ResetErrorStatusHandler(MethodRequest methodRequest, object userContext)
         {
+            var deviceClient = (DeviceClient)userContext; // Retrieve the DeviceClient instance from user context
             try
             {
-                string deviceid = methodRequest.DataAsJson.Replace("\"", "");
-                Console.WriteLine($"{deviceid}");
+                string deviceId = methodRequest.DataAsJson.Replace("\"", "");
+                Console.WriteLine($"{deviceId}");
 
-                if (methodRequest.DataAsJson != null)
+                if (!string.IsNullOrEmpty(deviceId))
                 {
-                    // Pobierz nazwę urządzenia z przekazanego payloadu
+                    Console.WriteLine($"ResetErrorStatus method invoked for device: {deviceId}");
 
-                    // Sprawdź, czy istnieje nazwa urządzenia
-                    if (!string.IsNullOrEmpty(deviceid))
-                    {
-                        Console.WriteLine($"ResetErrorStatus method invoked for device: {deviceid}");
-
-                        opcClient.CallMethod($"ns=2;s={deviceid}", $"ns=2;s={deviceid}/ResetErrorStatus");
-                        return new MethodResponse(200);
-                    }
-                    else
-                    {
-                        // Jeśli nie podano nazwy urządzenia w payloadzie, zwracamy błąd
-                        Console.WriteLine("Error: Device name not provided in the payload.");
-                        return new MethodResponse(400);
-                    }
+                    // Call the OPC method on the device
+                    opcClient.CallMethod($"ns=2;s={deviceId}", $"ns=2;s={deviceId}/ResetErrorStatus");
+                    return new MethodResponse(200);
                 }
                 else
                 {
-                    // Jeśli payload jest pusty lub niepoprawny, zwracamy błąd
-                    Console.WriteLine("Error: Empty or invalid payload.");
+                    Console.WriteLine("Error: Device name not provided in the payload.");
                     return new MethodResponse(400);
                 }
             }
             catch (Exception ex)
             {
-                // Jeśli wystąpił błąd podczas wywoływania operacji na urządzeniu, zwracamy kod błędu
                 Console.WriteLine($"An error occurred while executing ResetErrorStatus method: {ex.Message}");
                 return new MethodResponse(500);
             }
         }
-
-
     }
 }
